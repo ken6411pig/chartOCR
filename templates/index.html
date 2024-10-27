@@ -161,10 +161,18 @@
                 });
 
                 showStatus('正在載入語言檔...', 'info');
+                // 載入繁體中文和英文，因為可能會有混合文字
                 await worker.loadLanguage('chi_tra+eng');
                 await worker.initialize('chi_tra+eng');
+
+                // 調整辨識參數
                 await worker.setParameters({
-                    tessedit_pageseg_mode: '1',
+                    tessedit_pageseg_mode: '3',  // 使用完整頁面分析
+                    tessedit_ocr_engine_mode: '2',  // 使用 Legacy + LSTM 引擎
+                    preserve_interword_spaces: '1',
+                    textord_heavy_nr: '1',  // 改善數字辨識
+                    language_model_penalty_non_dict_word: '0.5',  // 降低非字典詞的懲罰
+                    language_model_penalty_non_freq_dict_word: '0.5'
                 });
 
                 showStatus('系統就緒', 'info');
@@ -177,7 +185,60 @@
             }
         }
 
-        // 處理圖片
+        
+        async function preprocessImage(file) {
+            return new Promise((resolve) => {
+                const img = new Image();
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+
+                    // 調整圖片大小，確保足夠的解析度
+                    let width = img.width;
+                    let height = img.height;
+
+                    // 如果圖片太小，放大到合適的大小
+                    const minDimension = 1000;
+                    if (width < minDimension || height < minDimension) {
+                        const scale = minDimension / Math.min(width, height);
+                        width *= scale;
+                        height *= scale;
+                    }
+
+                    canvas.width = width;
+                    canvas.height = height;
+
+                    // 使用更好的圖片縮放算法
+                    ctx.imageSmoothingEnabled = true;
+                    ctx.imageSmoothingQuality = 'high';
+
+                    // 繪製圖片
+                    ctx.drawImage(img, 0, 0, width, height);
+
+                    // 溫和的圖片增強
+                    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    const data = imageData.data;
+
+                    for (let i = 0; i < data.length; i += 4) {
+                        // 輕微提升對比度
+                        const contrast = 1.1;  // 降低對比度係數
+
+                        for (let j = 0; j < 3; j++) {
+                            const value = data[i + j];
+                            // 輕微提升對比度，但保持原始特徵
+                            data[i + j] = Math.min(255, Math.max(0, 
+                                (value - 128) * contrast + 128
+                            ));
+                        }
+                    }
+
+                    ctx.putImageData(imageData, 0, 0);
+                    resolve(canvas);
+                };
+                img.src = URL.createObjectURL(file);
+            });
+        }
+
         async function processImage(file) {
             try {
                 if (!worker) {
@@ -191,9 +252,14 @@
                 progressContainer.style.display = 'block';
                 updateProgress(0, '開始處理...');
 
-                const { data: { text } } = await worker.recognize(file);
+                // 預處理圖片
+                const image = await preprocessImage(file);
 
-                result.value = text.trim();
+                // 進行識別
+                const { data: { text } } = await worker.recognize(image);
+
+                // 後處理文字
+                result.value = postprocessText(text.trim());
                 copyBtn.disabled = false;
                 downloadBtn.disabled = false;
                 showStatus('處理完成', 'info');
@@ -205,6 +271,16 @@
                 progressContainer.style.display = 'none';
             }
         }
+
+        function postprocessText(text) {
+            return text
+                .replace(/\s+/g, ' ')  // 合併多個空格
+                .replace(/[^\u4e00-\u9fa5a-zA-Z0-9\s\.,\-\/\(\)\[\]]/g, '')  // 保留中文、英文、數字和基本標點
+                .replace(/([a-zA-Z]) ([a-zA-Z])/g, '$1$2')  // 移除英文字母之間的空格
+                .trim();
+        }
+
+        
 
         // 檔案上傳處理
         fileInput.addEventListener('change', async function(e) {
