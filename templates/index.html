@@ -1,10 +1,10 @@
-<!-- templates/index.html -->
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OCR 文字識別工具</title>
+    <script src='https://unpkg.com/tesseract.js@v5.0.5/dist/tesseract.min.js'></script>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -49,9 +49,26 @@
             margin: 5px;
             font-size: 16px;
         }
-        #loading {
+        .btn:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        #progress {
             display: none;
             margin: 10px 0;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 20px;
+            background-color: #f0f0f0;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        .progress-bar-fill {
+            height: 100%;
+            background-color: #2196f3;
+            width: 0%;
+            transition: width 0.3s ease;
         }
         .error {
             color: red;
@@ -62,7 +79,7 @@
 <body>
     <div class="container">
         <h1>OCR 文字識別工具</h1>
-        <div class="upload-area">
+        <div class="upload-area" id="dropArea">
             <input type="file" id="fileInput" accept="image/*" style="display: none;">
             <button class="btn" onclick="document.getElementById('fileInput').click()">
                 選擇圖片或拍照
@@ -70,7 +87,12 @@
             <p>支援 jpg、png、bmp 格式</p>
             <img id="preview" alt="預覽">
         </div>
-        <div id="loading">處理中...</div>
+        <div id="progress">
+            <div class="progress-bar">
+                <div class="progress-bar-fill" id="progressBar"></div>
+            </div>
+            <p id="progressText">處理中...</p>
+        </div>
         <div id="error" class="error"></div>
         <textarea id="result" placeholder="識別結果將顯示在這裡" readonly></textarea>
         <div>
@@ -80,12 +102,37 @@
     </div>
 
     <script>
+        let worker = null;
         const fileInput = document.getElementById('fileInput');
         const preview = document.getElementById('preview');
         const result = document.getElementById('result');
-        const loading = document.getElementById('loading');
+        const progress = document.getElementById('progress');
+        const progressBar = document.getElementById('progressBar');
+        const progressText = document.getElementById('progressText');
         const error = document.getElementById('error');
 
+        // 初始化 Tesseract
+        async function initTesseract() {
+            try {
+                worker = await Tesseract.createWorker({
+                    logger: message => {
+                        if (message.status === 'recognizing text') {
+                            const progress = message.progress * 100;
+                            progressBar.style.width = `${progress}%`;
+                            progressText.textContent = `處理中... ${Math.round(progress)}%`;
+                        }
+                    }
+                });
+                await worker.loadLanguage('chi_tra+eng');
+                await worker.initialize('chi_tra+eng');
+                console.log('Tesseract 初始化成功');
+            } catch (e) {
+                console.error('Tesseract 初始化失敗:', e);
+                error.textContent = '系統初始化失敗，請重新整理頁面';
+            }
+        }
+
+        // 處理文件上傳
         fileInput.addEventListener('change', async function(e) {
             const file = e.target.files[0];
             if (!file) return;
@@ -97,71 +144,94 @@
             // 重置狀態
             error.textContent = '';
             result.value = '';
-            loading.style.display = 'block';
-
-            // 建立 FormData
-            const formData = new FormData();
-            formData.append('file', file);
+            progress.style.display = 'block';
+            progressBar.style.width = '0%';
 
             try {
-                // 發送請求到後端
-                const response = await fetch('/upload', {
-                    method: 'POST',
-                    body: formData
-                });
-
-                const data = await response.json();
-
-                if (data.success) {
-                    result.value = data.text;
-                } else {
-                    throw new Error(data.error);
+                if (!worker) {
+                    await initTesseract();
                 }
+
+                // 執行 OCR
+                const { data: { text } } = await worker.recognize(file);
+
+                // 清理並顯示結果
+                result.value = text.trim();
             } catch (err) {
-                error.textContent = '處理失敗：' + err.message;
+                error.textContent = `處理失敗：${err.message}`;
             } finally {
-                loading.style.display = 'none';
+                progress.style.display = 'none';
             }
         });
 
+        // 複製文字
         function copyText() {
+            if (!result.value) {
+                alert('沒有可複製的文字！');
+                return;
+            }
             result.select();
             document.execCommand('copy');
-            alert('已複製到剪貼簿');
+            alert('已複製到剪貼簿！');
         }
 
-        async function downloadText() {
-            if (!result.value.trim()) {
-                alert('沒有可下載的文字');
+        // 下載文字
+        function downloadText() {
+            if (!result.value) {
+                alert('沒有可下載的文字！');
                 return;
             }
 
-            try {
-                const response = await fetch('/download', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ text: result.value })
-                });
-
-                if (response.ok) {
-                    const blob = await response.blob();
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = 'OCR結果.txt';
-                    document.body.appendChild(a);
-                    a.click();
-                    URL.revokeObjectURL(url);
-                    document.body.removeChild(a);
-                } else {
-                    throw new Error('下載失敗');
-                }
-            } catch (err) {
-                alert('下載失敗：' + err.message);
-            }
+            const blob = new Blob([result.value], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `OCR結果_${new Date().toISOString().slice(0,19).replace(/[:-]/g, '')}.txt`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
         }
+
+        // 拖放功能
+        const dropArea = document.getElementById('dropArea');
+
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropArea.addEventListener(eventName, preventDefaults, false);
+        });
+
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropArea.addEventListener(eventName, highlight, false);
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropArea.addEventListener(eventName, unhighlight, false);
+        });
+
+        function highlight(e) {
+            dropArea.classList.add('highlight');
+        }
+
+        function unhighlight(e) {
+            dropArea.classList.remove('highlight');
+        }
+
+        dropArea.addEventListener('drop', handleDrop, false);
+
+        function handleDrop(e) {
+            const dt = e.dataTransfer;
+            const files = dt.files;
+            fileInput.files = files;
+            fileInput.dispatchEvent(new Event('change'));
+        }
+
+        // 初始化
+        initTesseract();
     </script>
 </body>
 </html>
