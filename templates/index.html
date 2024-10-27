@@ -1,0 +1,167 @@
+<!-- templates/index.html -->
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OCR 文字識別工具</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f0f0f0;
+        }
+        .container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .upload-area {
+            border: 2px dashed #ccc;
+            padding: 20px;
+            text-align: center;
+            margin-bottom: 20px;
+            border-radius: 5px;
+        }
+        #preview {
+            max-width: 100%;
+            margin-top: 10px;
+            display: none;
+        }
+        #result {
+            width: 100%;
+            min-height: 150px;
+            margin-top: 20px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        .btn {
+            background-color: #2196f3;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+            font-size: 16px;
+        }
+        #loading {
+            display: none;
+            margin: 10px 0;
+        }
+        .error {
+            color: red;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>OCR 文字識別工具</h1>
+        <div class="upload-area">
+            <input type="file" id="fileInput" accept="image/*" style="display: none;">
+            <button class="btn" onclick="document.getElementById('fileInput').click()">
+                選擇圖片或拍照
+            </button>
+            <p>支援 jpg、png、bmp 格式</p>
+            <img id="preview" alt="預覽">
+        </div>
+        <div id="loading">處理中...</div>
+        <div id="error" class="error"></div>
+        <textarea id="result" placeholder="識別結果將顯示在這裡" readonly></textarea>
+        <div>
+            <button class="btn" onclick="copyText()" id="copyBtn">複製文字</button>
+            <button class="btn" onclick="downloadText()" id="downloadBtn">下載文字</button>
+        </div>
+    </div>
+
+    <script>
+        const fileInput = document.getElementById('fileInput');
+        const preview = document.getElementById('preview');
+        const result = document.getElementById('result');
+        const loading = document.getElementById('loading');
+        const error = document.getElementById('error');
+
+        fileInput.addEventListener('change', async function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            // 顯示預覽
+            preview.src = URL.createObjectURL(file);
+            preview.style.display = 'block';
+
+            // 重置狀態
+            error.textContent = '';
+            result.value = '';
+            loading.style.display = 'block';
+
+            // 建立 FormData
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                // 發送請求到後端
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    result.value = data.text;
+                } else {
+                    throw new Error(data.error);
+                }
+            } catch (err) {
+                error.textContent = '處理失敗：' + err.message;
+            } finally {
+                loading.style.display = 'none';
+            }
+        });
+
+        function copyText() {
+            result.select();
+            document.execCommand('copy');
+            alert('已複製到剪貼簿');
+        }
+
+        async function downloadText() {
+            if (!result.value.trim()) {
+                alert('沒有可下載的文字');
+                return;
+            }
+
+            try {
+                const response = await fetch('/download', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ text: result.value })
+                });
+
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'OCR結果.txt';
+                    document.body.appendChild(a);
+                    a.click();
+                    URL.revokeObjectURL(url);
+                    document.body.removeChild(a);
+                } else {
+                    throw new Error('下載失敗');
+                }
+            } catch (err) {
+                alert('下載失敗：' + err.message);
+            }
+        }
+    </script>
+</body>
+</html>
