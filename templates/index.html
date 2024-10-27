@@ -3,8 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OCR 文字識別工具</title>
-    <!-- 預先載入 Tesseract core -->
+    <title>OCR 批次文字識別工具</title>
     <script src='https://cdn.jsdelivr.net/npm/tesseract.js@4.1.1/dist/tesseract.min.js'></script>
     <style>
         body {
@@ -27,10 +26,40 @@
             margin-bottom: 20px;
             border-radius: 5px;
         }
-        #preview {
-            max-width: 100%;
-            margin-top: 10px;
-            display: none;
+        .preview-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin: 10px 0;
+        }
+        .preview-item {
+            position: relative;
+            width: 150px;
+            margin: 5px;
+        }
+        .preview-item img {
+            width: 100%;
+            height: auto;
+            border-radius: 5px;
+        }
+        .preview-item .remove-btn {
+            position: absolute;
+            top: -8px;
+            right: -8px;
+            background: red;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+            font-size: 12px;
+            line-height: 1;
+        }
+        .file-list {
+            margin: 10px 0;
+            max-height: 200px;
+            overflow-y: auto;
         }
         #result {
             width: 100%;
@@ -54,26 +83,6 @@
             background-color: #ccc;
             cursor: not-allowed;
         }
-        #loading {
-            display: none;
-            margin: 10px 0;
-        }
-        #status {
-            margin: 10px 0;
-            padding: 10px;
-            border-radius: 5px;
-            display: none;
-        }
-        #status.info {
-            background-color: #e3f2fd;
-            color: #1976d2;
-            display: block;
-        }
-        #status.error {
-            background-color: #ffebee;
-            color: #c62828;
-            display: block;
-        }
         .progress-container {
             margin: 10px 0;
             display: none;
@@ -91,20 +100,36 @@
             background-color: #2196f3;
             transition: width 0.3s ease;
         }
+        #status {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 5px;
+            display: none;
+        }
+        #status.info {
+            background-color: #e3f2fd;
+            color: #1976d2;
+            display: block;
+        }
+        #status.error {
+            background-color: #ffebee;
+            color: #c62828;
+            display: block;
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>OCR 文字識別工具</h1>
+        <h1>OCR 批次文字識別工具</h1>
         <div id="status"></div>
         <div class="upload-area">
-            <input type="file" id="fileInput" accept="image/*" style="display: none;">
+            <input type="file" id="fileInput" accept="image/*" multiple style="display: none;">
             <button class="btn" onclick="document.getElementById('fileInput').click()" id="uploadBtn">
-                選擇圖片或拍照
+                選擇多張圖片
             </button>
-            <p>支援 jpg、png、bmp 格式</p>
-            <img id="preview" alt="預覽">
+            <p>支援 jpg、png、bmp 格式，可同時選擇多張圖片</p>
         </div>
+        <div class="preview-container" id="previewContainer"></div>
         <div class="progress-container" id="progressContainer">
             <div class="progress-bar">
                 <div class="progress-fill" id="progressBar"></div>
@@ -113,6 +138,7 @@
         </div>
         <textarea id="result" placeholder="識別結果將顯示在這裡" readonly></textarea>
         <div>
+            <button class="btn" onclick="startProcessing()" id="startBtn" disabled>開始辨識</button>
             <button class="btn" onclick="copyText()" id="copyBtn" disabled>複製文字</button>
             <button class="btn" onclick="downloadText()" id="downloadBtn" disabled>下載文字</button>
         </div>
@@ -120,32 +146,31 @@
 
     <script>
         const fileInput = document.getElementById('fileInput');
-        const preview = document.getElementById('preview');
+        const previewContainer = document.getElementById('previewContainer');
         const result = document.getElementById('result');
         const status = document.getElementById('status');
         const progressContainer = document.getElementById('progressContainer');
         const progressBar = document.getElementById('progressBar');
         const progressText = document.getElementById('progressText');
         const uploadBtn = document.getElementById('uploadBtn');
+        const startBtn = document.getElementById('startBtn');
         const copyBtn = document.getElementById('copyBtn');
         const downloadBtn = document.getElementById('downloadBtn');
 
         let worker = null;
+        let selectedFiles = [];
 
-        // 顯示狀態訊息
         function showStatus(message, type = 'info') {
             status.textContent = message;
             status.className = type;
         }
 
-        // 更新進度
         function updateProgress(progress, message) {
             progressContainer.style.display = 'block';
             progressBar.style.width = `${progress * 100}%`;
             progressText.textContent = message;
         }
 
-        // 初始化 Tesseract
         async function initTesseract() {
             try {
                 showStatus('正在載入 OCR 模組...', 'info');
@@ -160,20 +185,16 @@
 
                 await worker.loadLanguage('chi_tra+eng');
                 await worker.initialize('chi_tra+eng');
-
-                // 簡化的參數設置
                 await worker.setParameters({
-                    // 1. 頁面分割模式
-                    tessedit_pageseg_mode: '3',  // 3: 全自動分頁，6: 假設為統一的文字區塊，7: 將圖像視為單行文字
-                    // 2. 字典和語言設置
-                    load_system_dawg: '1',        // 啟用系統字典
-                    // 3. 文字識別設置
-                    tessedit_char_whitelist:'',  preserve_line_breaks: '1', 
-                    preserve_interword_spaces: '1',  // 保留詞間空格
+                    tessedit_pageseg_mode: '3',
+                    load_system_dawg: '1',
+                    tessedit_char_whitelist: '',
+                    preserve_line_breaks: '1',
+                    preserve_interword_spaces: '1',
                     textord_preserve_blank_lines: '1',
-                    textord_single_line_spacing: '1',    // 單行間距
-                    paragraph_text_based: '1',      // 基於文字的段落檢測
-                    tessedit_ocr_engine_mode: '2',   // 使用 Legacy + LSTM 引擎
+                    textord_single_line_spacing: '1',
+                    paragraph_text_based: '1',
+                    tessedit_ocr_engine_mode: '2',
                 });
 
                 showStatus('系統就緒', 'info');
@@ -184,23 +205,21 @@
                 return false;
             }
         }
+
         async function preprocessImage(file) {
             return new Promise((resolve) => {
                 const img = new Image();
                 img.onload = () => {
                     const canvas = document.createElement('canvas');
                     const ctx = canvas.getContext('2d');
-                    // 適當的放大倍率
                     const scale = 2;
                     canvas.width = img.width * scale;
                     canvas.height = img.height * scale;
                     ctx.imageSmoothingEnabled = true;
                     ctx.imageSmoothingQuality = 'high';
-                    // 基本的圖像處理
                     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
                     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
                     const data = imageData.data;
-                    // 適中的對比度調整
                     const contrast = 1.2;
                     const brightness = 10;
 
@@ -219,66 +238,95 @@
                 img.src = URL.createObjectURL(file);
             });
         }
+
         function postprocessText(text) {
-        
-            let processedText = text
-                // 先將連續的空白行替換為兩個換行符
+            return text
                 .replace(/\n\s*\n/g, '\n\n')
-                // 移除每行開頭和結尾的空白字元
                 .split('\n')
                 .map(line => line.trim())
-                .filter(line => line.length > 0) // 移除純空白行
+                .filter(line => line.length > 0)
                 .join('\n');
-            return processedText;
         }
-        // 處理圖片
+
         async function processImage(file) {
+            const processedImage = await preprocessImage(file);
+            const { data: { text } } = await worker.recognize(processedImage);
+            return postprocessText(text);
+        }
+
+        function removeFile(index) {
+            selectedFiles.splice(index, 1);
+            updatePreview();
+            updateStartButton();
+        }
+
+        function updatePreview() {
+            previewContainer.innerHTML = '';
+            selectedFiles.forEach((file, index) => {
+                const previewItem = document.createElement('div');
+                previewItem.className = 'preview-item';
+
+                const img = document.createElement('img');
+                img.src = URL.createObjectURL(file);
+                img.alt = `Preview ${index + 1}`;
+
+                const removeBtn = document.createElement('button');
+                removeBtn.className = 'remove-btn';
+                removeBtn.innerHTML = '×';
+                removeBtn.onclick = () => removeFile(index);
+
+                previewItem.appendChild(img);
+                previewItem.appendChild(removeBtn);
+                previewContainer.appendChild(previewItem);
+            });
+        }
+
+        function updateStartButton() {
+            startBtn.disabled = selectedFiles.length === 0;
+        }
+
+        async function startProcessing() {
             try {
                 if (!worker) {
                     const initialized = await initTesseract();
                     if (!initialized) throw new Error('OCR system not ready');
                 }
 
+                startBtn.disabled = true;
                 uploadBtn.disabled = true;
                 progressContainer.style.display = 'block';
-                updateProgress(0, 'Starting process...');
+                result.value = '';
 
-                const processedImage = await preprocessImage(file);
-                const { data: { text } } = await worker.recognize(processedImage);
+                let allText = '';
+                for (let i = 0; i < selectedFiles.length; i++) {
+                    updateProgress(i / selectedFiles.length, `處理第 ${i + 1} 張，共 ${selectedFiles.length} 張`);
+                    const text = await processImage(selectedFiles[i]);
+                    allText += `=== 圖片 ${i + 1} ===\n${text}\n\n`;
+                }
 
-                const finalText = postprocessText(text);
-
-                result.value = finalText;
+                result.value = allText.trim();
                 copyBtn.disabled = false;
                 downloadBtn.disabled = false;
-                showStatus('Processing completed', 'info');
+                showStatus('處理完成', 'info');
             } catch (error) {
-                console.error('Processing error:', error);
-                showStatus(`Processing failed: ${error.message}`, 'error');
+                console.error('處理錯誤:', error);
+                showStatus(`處理失敗: ${error.message}`, 'error');
             } finally {
+                startBtn.disabled = false;
                 uploadBtn.disabled = false;
                 progressContainer.style.display = 'none';
             }
         }
 
-        // 檔案上傳處理
-        fileInput.addEventListener('change', async function(e) {
-            const file = e.target.files[0];
-            if (!file) return;
-
-            // 顯示預覽
-            preview.src = URL.createObjectURL(file);
-            preview.style.display = 'block';
-
-            // 重置
+        fileInput.addEventListener('change', function(e) {
+            selectedFiles = Array.from(e.target.files);
+            updatePreview();
+            updateStartButton();
             result.value = '';
             copyBtn.disabled = true;
             downloadBtn.disabled = true;
-
-            await processImage(file);
         });
 
-        // 複製文字
         function copyText() {
             if (!result.value) return;
             result.select();
@@ -286,10 +334,16 @@
             showStatus('已複製到剪貼簿', 'info');
         }
 
-        // 下載文字
         function downloadText() {
             if (!result.value) return;
-            const blob = new Blob([result.value], { type: 'text/plain;charset=utf-8' });
+
+            // 添加 UTF-8 BOM 標記
+            const BOM = new Uint8Array([0xEF, 0xBB, 0xBF]);
+            const text = result.value;
+
+            // 將 BOM 和文字內容合併成一個 Blob
+            const blob = new Blob([BOM, text], { type: 'text/plain;charset=utf-8' });
+
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
@@ -301,7 +355,6 @@
             showStatus('檔案已下載', 'info');
         }
 
-        // 初始化
         initTesseract();
     </script>
 </body>
