@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OCR 文字識別工具</title>
-    <script src='https://unpkg.com/tesseract.js@v5.0.5/dist/tesseract.min.js'></script>
+    <!-- 預先載入 Tesseract core -->
+    <script src='https://cdn.jsdelivr.net/npm/tesseract.js@4.1.1/dist/tesseract.min.js'></script>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -53,86 +54,159 @@
             background-color: #ccc;
             cursor: not-allowed;
         }
-        #progress {
+        #loading {
             display: none;
             margin: 10px 0;
+        }
+        #status {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 5px;
+            display: none;
+        }
+        #status.info {
+            background-color: #e3f2fd;
+            color: #1976d2;
+            display: block;
+        }
+        #status.error {
+            background-color: #ffebee;
+            color: #c62828;
+            display: block;
+        }
+        .progress-container {
+            margin: 10px 0;
+            display: none;
         }
         .progress-bar {
             width: 100%;
             height: 20px;
-            background-color: #f0f0f0;
+            background-color: #f5f5f5;
             border-radius: 10px;
             overflow: hidden;
         }
-        .progress-bar-fill {
+        .progress-fill {
             height: 100%;
-            background-color: #2196f3;
             width: 0%;
+            background-color: #2196f3;
             transition: width 0.3s ease;
-        }
-        .error {
-            color: red;
-            margin: 10px 0;
         }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>OCR 文字識別工具</h1>
-        <div class="upload-area" id="dropArea">
+        <div id="status"></div>
+        <div class="upload-area">
             <input type="file" id="fileInput" accept="image/*" style="display: none;">
-            <button class="btn" onclick="document.getElementById('fileInput').click()">
+            <button class="btn" onclick="document.getElementById('fileInput').click()" id="uploadBtn">
                 選擇圖片或拍照
             </button>
             <p>支援 jpg、png、bmp 格式</p>
             <img id="preview" alt="預覽">
         </div>
-        <div id="progress">
+        <div class="progress-container" id="progressContainer">
             <div class="progress-bar">
-                <div class="progress-bar-fill" id="progressBar"></div>
+                <div class="progress-fill" id="progressBar"></div>
             </div>
-            <p id="progressText">處理中...</p>
+            <p id="progressText">準備中...</p>
         </div>
-        <div id="error" class="error"></div>
         <textarea id="result" placeholder="識別結果將顯示在這裡" readonly></textarea>
         <div>
-            <button class="btn" onclick="copyText()" id="copyBtn">複製文字</button>
-            <button class="btn" onclick="downloadText()" id="downloadBtn">下載文字</button>
+            <button class="btn" onclick="copyText()" id="copyBtn" disabled>複製文字</button>
+            <button class="btn" onclick="downloadText()" id="downloadBtn" disabled>下載文字</button>
         </div>
     </div>
 
     <script>
-        let worker = null;
         const fileInput = document.getElementById('fileInput');
         const preview = document.getElementById('preview');
         const result = document.getElementById('result');
-        const progress = document.getElementById('progress');
+        const status = document.getElementById('status');
+        const progressContainer = document.getElementById('progressContainer');
         const progressBar = document.getElementById('progressBar');
         const progressText = document.getElementById('progressText');
-        const error = document.getElementById('error');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const copyBtn = document.getElementById('copyBtn');
+        const downloadBtn = document.getElementById('downloadBtn');
+
+        let worker = null;
+
+        // 顯示狀態訊息
+        function showStatus(message, type = 'info') {
+            status.textContent = message;
+            status.className = type;
+        }
+
+        // 更新進度
+        function updateProgress(progress, message) {
+            progressContainer.style.display = 'block';
+            progressBar.style.width = `${progress * 100}%`;
+            progressText.textContent = message;
+        }
 
         // 初始化 Tesseract
         async function initTesseract() {
             try {
+                showStatus('正在載入 OCR 模組...', 'info');
                 worker = await Tesseract.createWorker({
-                    logger: message => {
-                        if (message.status === 'recognizing text') {
-                            const progress = message.progress * 100;
-                            progressBar.style.width = `${progress}%`;
-                            progressText.textContent = `處理中... ${Math.round(progress)}%`;
+                    logger: m => {
+                        console.log(m);
+                        if (m.status === 'recognizing text') {
+                            updateProgress(m.progress, `識別中... ${Math.round(m.progress * 100)}%`);
+                        } else {
+                            updateProgress(0.5, `${m.status}...`);
                         }
                     }
                 });
+
+                showStatus('正在載入語言檔...', 'info');
                 await worker.loadLanguage('chi_tra+eng');
                 await worker.initialize('chi_tra+eng');
-                console.log('Tesseract 初始化成功');
-            } catch (e) {
-                console.error('Tesseract 初始化失敗:', e);
-                error.textContent = '系統初始化失敗，請重新整理頁面';
+                await worker.setParameters({
+                    tessedit_pageseg_mode: '1',
+                });
+
+                showStatus('系統就緒', 'info');
+                uploadBtn.disabled = false;
+                return true;
+            } catch (error) {
+                console.error('初始化錯誤:', error);
+                showStatus(`初始化失敗: ${error.message}`, 'error');
+                return false;
             }
         }
 
-        // 處理文件上傳
+        // 處理圖片
+        async function processImage(file) {
+            try {
+                if (!worker) {
+                    const initialized = await initTesseract();
+                    if (!initialized) {
+                        throw new Error('OCR 系統未就緒');
+                    }
+                }
+
+                uploadBtn.disabled = true;
+                progressContainer.style.display = 'block';
+                updateProgress(0, '開始處理...');
+
+                const { data: { text } } = await worker.recognize(file);
+
+                result.value = text.trim();
+                copyBtn.disabled = false;
+                downloadBtn.disabled = false;
+                showStatus('處理完成', 'info');
+            } catch (error) {
+                console.error('處理錯誤:', error);
+                showStatus(`處理失敗: ${error.message}`, 'error');
+            } finally {
+                uploadBtn.disabled = false;
+                progressContainer.style.display = 'none';
+            }
+        }
+
+        // 檔案上傳處理
         fileInput.addEventListener('change', async function(e) {
             const file = e.target.files[0];
             if (!file) return;
@@ -141,47 +215,25 @@
             preview.src = URL.createObjectURL(file);
             preview.style.display = 'block';
 
-            // 重置狀態
-            error.textContent = '';
+            // 重置
             result.value = '';
-            progress.style.display = 'block';
-            progressBar.style.width = '0%';
+            copyBtn.disabled = true;
+            downloadBtn.disabled = true;
 
-            try {
-                if (!worker) {
-                    await initTesseract();
-                }
-
-                // 執行 OCR
-                const { data: { text } } = await worker.recognize(file);
-
-                // 清理並顯示結果
-                result.value = text.trim();
-            } catch (err) {
-                error.textContent = `處理失敗：${err.message}`;
-            } finally {
-                progress.style.display = 'none';
-            }
+            await processImage(file);
         });
 
         // 複製文字
         function copyText() {
-            if (!result.value) {
-                alert('沒有可複製的文字！');
-                return;
-            }
+            if (!result.value) return;
             result.select();
             document.execCommand('copy');
-            alert('已複製到剪貼簿！');
+            showStatus('已複製到剪貼簿', 'info');
         }
 
         // 下載文字
         function downloadText() {
-            if (!result.value) {
-                alert('沒有可下載的文字！');
-                return;
-            }
-
+            if (!result.value) return;
             const blob = new Blob([result.value], { type: 'text/plain;charset=utf-8' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -191,43 +243,7 @@
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
-        }
-
-        // 拖放功能
-        const dropArea = document.getElementById('dropArea');
-
-        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-            dropArea.addEventListener(eventName, preventDefaults, false);
-        });
-
-        function preventDefaults(e) {
-            e.preventDefault();
-            e.stopPropagation();
-        }
-
-        ['dragenter', 'dragover'].forEach(eventName => {
-            dropArea.addEventListener(eventName, highlight, false);
-        });
-
-        ['dragleave', 'drop'].forEach(eventName => {
-            dropArea.addEventListener(eventName, unhighlight, false);
-        });
-
-        function highlight(e) {
-            dropArea.classList.add('highlight');
-        }
-
-        function unhighlight(e) {
-            dropArea.classList.remove('highlight');
-        }
-
-        dropArea.addEventListener('drop', handleDrop, false);
-
-        function handleDrop(e) {
-            const dt = e.dataTransfer;
-            const files = dt.files;
-            fileInput.files = files;
-            fileInput.dispatchEvent(new Event('change'));
+            showStatus('檔案已下載', 'info');
         }
 
         // 初始化
